@@ -1,16 +1,38 @@
 import {Queue, Worker, Job} from 'bullmq';
 import Redis from 'ioredis';
 import { ENVIRONMENT } from '../config/environment';
-import type { BasePayment, IPayment } from '../domain/payment';
+import type { BasePayment } from '../domain/payment';
 import { dispatchPayment } from '../workers/payment-dispatcher-worker';
 import { addPayment } from '../services/summary-service';
 import { checkHealth } from '../workers/check-health-worker';
 
-export const redis = new Redis(String(ENVIRONMENT.REDIS_URL), {maxRetriesPerRequest: null});
+export const redis = new Redis(String(ENVIRONMENT.REDIS_URL), {
+  maxRetriesPerRequest: null, 
+  retryStrategy(times) {
+    return Math.min(times * 50, 2000); 
+  },
+  enableOfflineQueue: true, 
+  connectionName: 'rinha-backend-2025',
+});
 
-const queue = new Queue("payments", {connection: redis});
+const queue = new Queue("payments", {
+  connection: redis, 
+  defaultJobOptions: {
+  attempts: 3, 
+  backoff: {
+    type: 'exponential',
+    delay: 500,
+  },
+  },
+});
 
-const healthQueue = new Queue("processors-health", { connection: redis });
+const healthQueue = new Queue("processors-health", { 
+  connection: redis,
+    defaultJobOptions: {
+    removeOnComplete: true, 
+    removeOnFail: true,
+  },
+});
 
 redis.on("connect", async () => {
   await healthQueue.add("processors-health", {}, {
@@ -23,21 +45,47 @@ redis.on("connect", async () => {
 
 
 const worker = new Worker("payments", async (job: Job<BasePayment>) => {
-  return await dispatchPayment(job.data);
-}, {connection: redis});
+  try {
+    const payment = await dispatchPayment(job.data);
+    await redis.hset('payments-correlationIds', job.data.correlationId, 'done');
 
-const checkHealthWorker = new Worker("processors-health", async (_: Job) => {
-  const health = await checkHealth();
+    return payment;
+  } catch (error) {
+    await redis.hdel('payments-correlationIds', job.data.correlationId);
+  }
+}, {connection: redis, concurrency: 12});
 
-  await redis.set("processor-health", JSON.stringify(health));
-}, {connection: redis});
+const checkHealthWorker = new Worker(
+  'processors-health',
+  async (_: Job) => {
+    const pipeline = redis.pipeline();
+    const health = await checkHealth();
+    
+    pipeline.set('processor-health', JSON.stringify(health));
+    await pipeline.exec();
+  },
+  {
+    connection: redis,
+    concurrency: 1, 
+    limiter: {
+      max: 1,
+      duration: 5000,
+    },
+  }
+);
 
 worker.on("completed", async (job) => {
-  const result = job.returnvalue;
-  if (!result) return;
-  
-  addPayment(result);
+  setImmediate(() => {
+    const result = job.returnvalue;
+    if (!result) return;
+    addPayment(result);
+  });
 });
 
+process.on('SIGTERM', async () => {
+  await worker.close();
+  await checkHealthWorker.close();
+  await redis.quit();
+});
 
 export {queue};
