@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { ENVIRONMENT } from "../config/environment";
 import { registerRoutes } from "./routes";
 
-const server = Fastify({logger: true});
+const server = Fastify({logger: false});
 
 
 (async function start() {
