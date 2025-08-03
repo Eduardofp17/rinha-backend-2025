@@ -1,5 +1,6 @@
 import type { IPayment } from '../domain/payment';
 import { redis } from '../infra/queue';
+import { safeDollar } from '../utils/safe-dollar';
 
 const PAYMENTS_KEY = 'payments-processed';
 
@@ -29,6 +30,9 @@ export async function getSummary(from?: string, to?: string) {
     target.totalRequests += 1;
     target.totalAmount += p.amount;
   }
+
+  summary.default.totalAmount = safeDollar(summary.default.totalAmount);
+  summary.fallback.totalAmount = safeDollar(summary.fallback.totalAmount);
 
   return summary;
 }
