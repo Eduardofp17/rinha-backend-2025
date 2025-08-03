@@ -1,8 +1,8 @@
 import type { BasePayment, IPayment } from "../domain/payment"
-import { sendToFallbackPaymentProcessor } from "../processors/fallback-processor" 
-import { sendToDefaultPaymentProcessor } from "../processors/default-processor";
 import { redis } from "../infra/queue";
 import type { ICheckHealth } from "../domain/health-checker";
+import { sendToProcessor } from "../processors/send-to-processor";
+import { ENVIRONMENT } from "../config/environment";
 
 export async function dispatchPayment(payment: BasePayment): Promise<IPayment | void> {
   const requestedAt = new Date().toISOString();
@@ -13,18 +13,25 @@ export async function dispatchPayment(payment: BasePayment): Promise<IPayment | 
   };
 
   let processor: 'default' | 'fallback' = 'default';
+  
+  if (health.default.failing && !health.fallback.failing) {
+    processor = 'fallback';
+  } else if (health.fallback.failing && !health.default.failing) {
+    processor = 'default';
+  } else if (!health.default.failing && !health.fallback.failing) {
+    if (health.fallback.minResponseTime < health.default.minResponseTime * 0.8) {
+      processor = 'fallback';
+    }
+  }
 
-  if(health.default.failing && !health.fallback.failing) processor = 'fallback';
-  else if(health.default.minResponseTime > health.fallback.minResponseTime) processor = 'fallback';
-
-  const res = processor === 'default' ? await sendToDefaultPaymentProcessor({...payment, requestedAt}) : await sendToFallbackPaymentProcessor({...payment, requestedAt});
+  const res = processor === 'default' ? await sendToProcessor({...payment, requestedAt}, ENVIRONMENT.PAYMENT_PROCESSOR_URL_DEFAULT) : await sendToProcessor({...payment, requestedAt}, ENVIRONMENT.PAYMENT_PROCESSOR_URL_FALLBACK);
 
   if(res.status !== 200) return;
 
   return {
     ...payment,
     processor,
-    createdAt: new Date().toISOString()
+    createdAt: requestedAt
   };
 }
 
