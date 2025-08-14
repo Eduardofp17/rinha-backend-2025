@@ -5,12 +5,21 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 
 RUN npm install -g pnpm \
-  && pnpm install --frozen-lockfile --prod
+  && pnpm install --frozen-lockfile
 
 COPY . .
 
 RUN pnpm build
 
+FROM node:18-slim
+
+WORKDIR /app
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package.json ./
+
+RUN npm install -g pnpm \
+  && pnpm install --frozen-lockfile --prod
 
 EXPOSE 8080
 
