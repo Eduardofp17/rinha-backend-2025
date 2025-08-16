@@ -7,11 +7,11 @@ import { addPayment } from '../services/summary-service';
 import { checkHealth } from '../workers/check-health-worker';
 
 export const redis = new Redis(String(ENVIRONMENT.REDIS_URL), {
-  maxRetriesPerRequest: null, 
+  maxRetriesPerRequest: 3, 
   retryStrategy(times) {
     return Math.min(times * 50, 2000); 
   },
-  enableOfflineQueue: true, 
+  enableOfflineQueue: false,
   connectionName: 'rinha-backend-2025',
 });
 
@@ -53,7 +53,7 @@ const worker = new Worker("payments", async (job: Job<BasePayment>) => {
   } catch (error) {
     await redis.hdel('payments-correlationIds', job.data.correlationId);
   }
-}, {connection: redis, concurrency: 12});
+}, {connection: redis, concurrency: 8});
 
 const checkHealthWorker = new Worker(
   'processors-health',
